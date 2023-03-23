@@ -1,6 +1,14 @@
 package org.jboss.pull.player;
 
+import java.net.Authenticator;
 import java.net.HttpURLConnection;
+import java.net.InetAddress;
+import java.net.PasswordAuthentication;
+import java.net.URI;
+import java.net.URL;
+import java.net.http.HttpClient;
+import java.net.http.HttpRequest;
+import java.net.http.HttpResponse;
 import java.security.SecureRandom;
 import java.security.cert.CertificateException;
 import java.security.cert.X509Certificate;
@@ -11,20 +19,6 @@ import java.util.Map;
 import javax.net.ssl.SSLContext;
 import javax.net.ssl.X509TrustManager;
 
-import org.apache.http.HttpHeaders;
-import org.apache.http.HttpResponse;
-import org.apache.http.auth.AuthScope;
-import org.apache.http.auth.UsernamePasswordCredentials;
-import org.apache.http.client.CredentialsProvider;
-import org.apache.http.client.HttpClient;
-import org.apache.http.client.methods.HttpGet;
-import org.apache.http.client.methods.HttpPost;
-import org.apache.http.conn.ssl.NoopHostnameVerifier;
-import org.apache.http.conn.ssl.SSLConnectionSocketFactory;
-import org.apache.http.entity.StringEntity;
-import org.apache.http.impl.client.BasicCredentialsProvider;
-import org.apache.http.impl.client.HttpClients;
-import org.apache.http.message.BasicHeader;
 import org.jboss.dmr.ModelNode;
 
 /**
@@ -37,7 +31,8 @@ public class TeamCityApi {
     private final boolean dryRun;
     private final boolean disabled;
 
-    public TeamCityApi(String host, int port, String username, String password, String branchMapping, boolean dryRun, boolean disabled) throws Exception {
+    public TeamCityApi(String host, int port, String username, String password, String branchMapping, boolean dryRun,
+                       boolean disabled) throws Exception {
         if (port == 443) {
             this.baseUrl = "https://" + host + "/httpAuth";
         } else {
@@ -48,7 +43,7 @@ public class TeamCityApi {
         this.dryRun = dryRun;
         this.disabled = disabled;
         SSLContext context = SSLContext.getInstance("TLS");
-        context.init(null, new X509TrustManager[]{new X509TrustManager() {
+        context.init(null, new X509TrustManager[] {new X509TrustManager() {
             public void checkClientTrusted(X509Certificate[] chain,
                                            String authType) throws CertificateException {
             }
@@ -61,23 +56,27 @@ public class TeamCityApi {
                 return new X509Certificate[0];
             }
         }}, new SecureRandom());
-        SSLConnectionSocketFactory socketFactory = new SSLConnectionSocketFactory(context, new NoopHostnameVerifier());
-
-
-
-        CredentialsProvider credsProvider = new BasicCredentialsProvider();
-        credsProvider.setCredentials(
-                new AuthScope(host, port),
-                new UsernamePasswordCredentials(username, password));
-        httpClient = HttpClients.custom()
-                .setDefaultCredentialsProvider(credsProvider)
-                .setSSLHostnameVerifier(new NoopHostnameVerifier())
-                .setSSLSocketFactory(socketFactory)
+        httpClient = HttpClient.newBuilder()
+                .authenticator(new Authenticator() {
+                    @Override
+                    public PasswordAuthentication requestPasswordAuthenticationInstance(final String host,
+                                                                                        final InetAddress addr,
+                                                                                        final int port,
+                                                                                        final String protocol,
+                                                                                        final String prompt,
+                                                                                        final String scheme,
+                                                                                        final URL url,
+                                                                                        final RequestorType reqType) {
+                        return new PasswordAuthentication(username, password.toCharArray());
+                    }
+                })
+                .sslContext(context)
                 .build();
         parseBranchMapping(branchMapping);
     }
 
-    public TeamCityApi(String host, int port, String username, String password, String branchMapping, boolean dryRun) throws Exception {
+    public TeamCityApi(String host, int port, String username, String password, String branchMapping, boolean dryRun)
+            throws Exception {
         this(host, port, username, password, branchMapping, dryRun, false);
     }
 
@@ -93,21 +92,22 @@ public class TeamCityApi {
         List<Integer> result = new LinkedList<>();
 
         if (disabled) {
-            System.err.printf("Warning: TeamCity has been disabled via player.properties no queued build information is available.\n");
+            System.err.printf("Warning: TeamCity has been disabled via player.properties no queued build information is available.%n");
             return result;
         }
-        HttpGet get = null;
         try {
             //get = new HttpGet(baseUrl + "/app/rest/builds?locator=buildType:" + buildTypeId + ",branch:name:pull/" + pull + ",running:any,count:1");
-            get = new HttpGet(baseUrl + "/app/rest/buildQueue?locator=buildType:" + buildTypeId);
-            get.setHeader(new BasicHeader(HttpHeaders.ACCEPT_ENCODING, "UTF-8"));
-            get.addHeader("Accept", "application/json");
-            final HttpResponse execute = httpClient.execute(get);
-            if (execute.getStatusLine().getStatusCode() != HttpURLConnection.HTTP_OK) {
-                System.err.printf("Could not queued builds");
+            final HttpRequest request = HttpRequest.newBuilder(URI.create(baseUrl + "/app/rest/buildQueue?locator=buildType:" + buildTypeId))
+                    .GET()
+                    .header("Accept-Encoding", "UTF-8")
+                    .header("Accept", "application/json")
+                    .build();
+            final var response = httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
+            if (response.statusCode() != HttpURLConnection.HTTP_OK) {
+                System.err.println("Could not queued builds");
             }
 
-            ModelNode node = ModelNode.fromJSONStream(execute.getEntity().getContent());
+            ModelNode node = ModelNode.fromJSONStream(response.body());
             ModelNode builds = node.get("build");
             if (!builds.isDefined() || builds.asList().isEmpty()) {
                 return result;
@@ -117,18 +117,15 @@ public class TeamCityApi {
                         continue;
                     }
                     String branch = build.get("branchName").asString();
-                    if (!branch.contains("pull")) { continue; }
+                    if (!branch.contains("pull")) {
+                        continue;
+                    }
                     int pull = Integer.parseInt(branch.substring(branch.indexOf("/") + 1));
                     result.add(pull);
                 }
             }
         } catch (Exception e) {
             throw new IllegalStateException("Could not obtain build list", e);
-        } finally {
-            if (get != null) {
-                get.releaseConnection();
-            }
-
         }
         return result;
     }
@@ -136,7 +133,7 @@ public class TeamCityApi {
     List<Integer> getQueuedBuilds() {
         List<Integer> result = new LinkedList<>();
         if (disabled) {
-            System.err.printf("Warning: TeamCity has been disabled via player.properties no queued build information is available.\n");
+            System.err.printf("Warning: TeamCity has been disabled via player.properties no queued build information is available.%n");
             return result;
         }
         for (String buildType : branchMapping.values()) {
@@ -151,23 +148,24 @@ public class TeamCityApi {
 
     public TeamCityBuild findBuild(int pull, String hash, String branch) {
         if (disabled) {
-            System.err.printf("Warning: TeamCity has been disabled via player.properties, dummy build information will be used.\n");
+            System.err.printf("Warning: TeamCity has been disabled via player.properties, dummy build information will be used.%n");
             return null;
             //return new TeamCityBuild(0, "disabled", false, "20160101T130000+0000");
         }
 
         String buildTypeId = branchMapping.get(branch);
-        HttpGet get = null;
         try {
-            get = new HttpGet(baseUrl + "/app/rest/builds?locator=buildType:" + buildTypeId + ",branch:name:pull/" + pull + ",running:any,canceled:any,failedToStart:any,count:1");
-            get.setHeader(new BasicHeader(HttpHeaders.ACCEPT_ENCODING, "UTF-8"));
-            get.addHeader("Accept", "application/json");
-            final HttpResponse execute = httpClient.execute(get);
-            if (execute.getStatusLine().getStatusCode() != HttpURLConnection.HTTP_OK) {
-                System.err.printf("Could not find build, for pull: %s\n", pull);
+            final HttpRequest request = HttpRequest.newBuilder(URI.create(baseUrl + "/app/rest/builds?locator=buildType:" + buildTypeId + ",branch:name:pull/" + pull + ",running:any,canceled:any,failedToStart:any,count:1"))
+                    .GET()
+                    .header("Accept-Encoding", "UTF-8")
+                    .header("Accept", "application/json")
+                    .build();
+            final var response = httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
+            if (response.statusCode() != HttpURLConnection.HTTP_OK) {
+                System.err.printf("Could not find build, for pull: %s%n", pull);
             }
 
-            ModelNode node = ModelNode.fromJSONStream(execute.getEntity().getContent());
+            ModelNode node = ModelNode.fromJSONStream(response.body());
             ModelNode builds = node.get("build");
             if (!builds.isDefined() || builds.asList().isEmpty()) {
                 return null;
@@ -180,26 +178,22 @@ public class TeamCityApi {
 
         } catch (Exception e) {
             throw new IllegalStateException("Could not obtain build list", e);
-        } finally {
-            if (get != null) {
-                get.releaseConnection();
-            }
-
         }
     }
 
     private TeamCityBuild getBuildById(String id, String hash) {
-        HttpGet get = null;
         try {
-            get = new HttpGet(baseUrl + "/app/rest/builds/id:" + id);
-            get.setHeader(new BasicHeader(HttpHeaders.ACCEPT_ENCODING, "UTF-8"));
-            get.addHeader("Accept", "application/json");
-            final HttpResponse execute = httpClient.execute(get);
-            if (execute.getStatusLine().getStatusCode() != HttpURLConnection.HTTP_OK) {
-                System.err.printf("Could not find build, for id: %s\n", id);
+            final HttpRequest request = HttpRequest.newBuilder(URI.create(baseUrl + "/app/rest/builds/id:" + id))
+                    .GET()
+                    .header("Accept-Encoding", "UTF-8")
+                    .header("Accept", "application/json")
+                    .build();
+            final var execute = httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
+            if (execute.statusCode() != HttpURLConnection.HTTP_OK) {
+                System.err.printf("Could not find build, for id: %s%n", id);
             }
 
-            ModelNode build = ModelNode.fromJSONStream(execute.getEntity().getContent());
+            ModelNode build = ModelNode.fromJSONStream(execute.body());
             boolean found = false;
             for (ModelNode prop : build.get("properties", "property").asList()) {
                 if ("hash".equals(prop.get("name").asString())) {
@@ -235,31 +229,22 @@ public class TeamCityApi {
 
         } catch (Exception e) {
             throw new IllegalStateException("Could not obtain build list", e);
-        } finally {
-            if (get != null) {
-                get.releaseConnection();
-            }
-
         }
     }
 
     void triggerJob(int pull, String sha1, String branch) {
         if (disabled) {
-            System.err.printf("Warning: TeamCity has been disabled via player.properties, build will not be triggered.\n");
+            System.err.printf("Warning: TeamCity has been disabled via player.properties, build will not be triggered.%n");
             return;
         }
         System.out.println("triggering job for pull = " + pull);
         String buildTypeId = branchMapping.get(branch);
         if (dryRun) {
-            System.out.printf("DryRun, not triggering for branch: '%s' build type id: '%s'\n", branch, buildTypeId);
+            System.out.printf("DryRun, not triggering for branch: '%s' build type id: '%s'%n", branch, buildTypeId);
             return;
         }
 
-        HttpPost post = null;
         try {
-            post = new HttpPost(baseUrl + "/app/rest/buildQueue");
-            post.setHeader(new BasicHeader(HttpHeaders.ACCEPT_ENCODING, "UTF-8"));
-            post.setHeader(new BasicHeader(HttpHeaders.CONTENT_TYPE, "application/json"));
             ModelNode build = new ModelNode();
             build.get("branchName").set("pull/" + pull);
             ModelNode buildType = build.get("buildType");
@@ -274,18 +259,17 @@ public class TeamCityApi {
             prop = props.add();
             prop.get("name").set("branch");
             prop.get("value").set(branch);
-            post.setEntity(new StringEntity(build.toJSONString(false)));
-            final HttpResponse execute = httpClient.execute(post);
-            if (execute.getStatusLine().getStatusCode() != HttpURLConnection.HTTP_OK) {
-                System.err.printf("Problem triggering build for pull: %d sha1: %s\nResponse: %s \n", pull, sha1, execute.getStatusLine().toString());
+            final HttpRequest request = HttpRequest.newBuilder(URI.create(baseUrl + "/app/rest/buildQueue"))
+                    .POST(HttpRequest.BodyPublishers.ofString(build.toJSONString(false)))
+                    .header("Accept-Encoding", "UTF-8")
+                    .header("Accept", "application/json")
+                    .build();
+            final var execute = httpClient.send(request, HttpResponse.BodyHandlers.ofInputStream());
+            if (execute.statusCode() != HttpURLConnection.HTTP_OK) {
+                System.err.printf("Problem triggering build for pull: %d sha1: %s%nResponse: %s %n", pull, sha1, execute.statusCode());
             }
         } catch (Exception e) {
             throw new IllegalStateException(e);
-        } finally {
-            if (post != null) {
-                post.releaseConnection();
-            }
-
         }
     }
 }
