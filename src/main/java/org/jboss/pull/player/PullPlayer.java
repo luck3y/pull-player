@@ -3,7 +3,12 @@ package org.jboss.pull.player;
 import java.io.IOException;
 import java.text.DateFormat;
 import java.text.SimpleDateFormat;
+import java.time.Duration;
 import java.time.Instant;
+import java.time.LocalDateTime;
+import java.time.ZoneId;
+import java.time.ZonedDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.Date;
 import java.util.List;
 import java.util.regex.Pattern;
@@ -24,6 +29,7 @@ public class PullPlayer {
     private final LabelProcessor labelProcessor;
     private final boolean whitelistEnabled;
     private String githubLogin;
+    private long pushSettleDuration;
 
     protected PullPlayer(final boolean dryRun) throws Exception {
         String teamcityHost = Util.require("teamcity.host");
@@ -39,6 +45,8 @@ public class PullPlayer {
         final boolean disabled = Util.optionalBoolean("teamcity.disabled", false);
         this.whitelistEnabled = Util.optionalBoolean("whitelist.enabled", true);
         System.out.println("White list enabled: " + whitelistEnabled);
+
+        this.pushSettleDuration = Long.parseLong(Util.optionalString("github.settle.seconds", "60"));
         teamCityApi = new TeamCityApi(teamcityHost, teamcityPort, user, password, teamcityBranchMapping, dryRun, disabled);
         labelProcessor = new LabelProcessor(gitHubApi);
     }
@@ -74,9 +82,6 @@ public class PullPlayer {
                 continue;
             }
 
-            // Add the pull to the label processor
-            labelProcessor.add(pull);
-
             boolean help = false;
             boolean retrigger = false;
             boolean retriggerFailed = false;
@@ -105,6 +110,7 @@ public class PullPlayer {
             if (mergeable) {
                 mergeCommitSha = prDetails.get("merge_commit_sha").asString();
             }
+
             String commentsUrl = pull.get("comments_url").asString(); //get url for comments
             List<Comment> comments = gitHubApi.getComments(commentsUrl);
 
@@ -176,6 +182,29 @@ public class PullPlayer {
                 System.out.println("No valid merge_commit_sha found on PR, skipping.");
                 continue;
             }
+
+            // check that the PR hasn't been pushed in the last 2 minutes before starting. On force pushes this can cause the 
+            // PR to remain in the mergeable state, with a non-null merge-commit id, but the commit sha is still waiting to be lazily
+            // updated.
+            System.out.println(prDetails.toJSONString(false));
+            System.out.println(prDetails.get("updated_at").toJSONString(false));
+            ModelNode updatedAt = prDetails.get("updated_at");
+            if (updatedAt == null) {
+                System.out.println("updated_at is null, skipping.");
+                continue;
+            }
+            String updated = updatedAt.asString();
+            ZonedDateTime prDateTime = ZonedDateTime.parse(updated, DateTimeFormatter.ISO_INSTANT.withZone(ZoneId.of("Z")));
+            LocalDateTime now = LocalDateTime.now(ZoneId.of("Z"));            
+            Duration elapsed = Duration.between(prDateTime, now.atZone(ZoneId.of("Z")));
+            if (elapsed.toSeconds() < this.pushSettleDuration) {
+                System.out.println("PR pushed / force-pushed too recently, will run on next pass [" + elapsed.toSeconds() + " seconds]");
+                continue;
+            }
+
+            // Add the pull to the label processor
+            labelProcessor.add(pull);
+
             System.out.printf("merge commit sha: %s\n", mergeCommitSha);
             TeamCityBuild build = null;
             if (mergeCommitSha != null) {

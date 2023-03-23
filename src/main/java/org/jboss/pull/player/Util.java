@@ -85,6 +85,13 @@ class Util {
         return Boolean.parseBoolean(result.trim());
     }
 
+    static String optionalString(final String name, final String defaultValue) {
+        final String result = PropertiesHolder.PROPERTIES.getProperty(name);
+        if (result == null)
+            return defaultValue;
+        return result;
+    }
+
     private static class PropertiesHolder {
         static final Properties PROPERTIES = new Properties();
         static {
