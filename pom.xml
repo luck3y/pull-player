@@ -19,7 +19,7 @@
         <dependency>
             <groupId>org.jboss</groupId>
             <artifactId>jboss-dmr</artifactId>
-            <version>1.5.1.Final</version>
+            <version>1.6.1.Final</version>
         </dependency>
         <dependency>
           <groupId>org.apache.httpcomponents</groupId>
