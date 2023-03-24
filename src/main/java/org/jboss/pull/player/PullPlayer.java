@@ -23,6 +23,7 @@ public class PullPlayer {
     private final TeamCityApi teamCityApi;
     private final LabelProcessor labelProcessor;
     private final boolean whitelistEnabled;
+    private final String skipLabel;
     private String githubLogin;
 
     protected PullPlayer(final boolean dryRun) throws Exception {
@@ -41,6 +42,7 @@ public class PullPlayer {
         System.out.println("White list enabled: " + whitelistEnabled);
         teamCityApi = new TeamCityApi(teamcityHost, teamcityPort, user, password, teamcityBranchMapping, dryRun, disabled);
         labelProcessor = new LabelProcessor(gitHubApi);
+        skipLabel = Util.getProperties().getProperty("labels.skip", "");
     }
 
     static String getTime() {
@@ -212,6 +214,10 @@ public class PullPlayer {
                 continue;
             }
 
+            if (skipBuild(pullNumber, prDetails)) {
+                continue;
+            }
+
             if (build != null && !retrigger) {
                 if (build.getStatus() != null) {
                     Jobs.storeCompletedJob(sha1, pullNumber, build.getBuild());
@@ -224,6 +230,25 @@ public class PullPlayer {
                 System.out.println("Pending build, skipping: " + pullNumber);
             }
         }
+    }
+
+    private boolean skipBuild(final int pullNumber, final ModelNode model) {
+        if (model == null) {
+            System.out.printf("Skipping build %s as the model is null.%n", pullNumber);
+            return true;
+        }
+        if (skipLabel.isBlank()) {
+            return false;
+        }
+        // Check the labels
+        final List<ModelNode> labels = model.get("labels").asList();
+        for (ModelNode label : labels) {
+            if (skipLabel.equals(label.get("name").asString())) {
+                System.out.printf("Skipping build %s as it's labeled with %s.%n", pullNumber, skipLabel);
+                return true;
+            }
+        }
+        return false;
     }
 
     private boolean verifyWhitelist(PersistentList whiteList, String user, int pullNumber, boolean notify) {
