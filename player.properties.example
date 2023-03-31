@@ -33,3 +33,7 @@
 # issue.labels=fixme,rebase-required
 # The label to replace the label with
 # issue.label.fixme=review-needed
+
+# Labels which trigger actions
+# Skip triggering a build if the label is present on the PR
+# labels.skip=skip-ci
