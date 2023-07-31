@@ -14,7 +14,9 @@ import java.io.InputStreamReader;
 import java.io.Reader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Properties;
@@ -88,7 +90,20 @@ class Util {
     private static class PropertiesHolder {
         static final Properties PROPERTIES = new Properties();
         static {
-            try (Reader reader = Files.newBufferedReader(BASE_DIR.toPath().resolve("player.properties"), StandardCharsets.UTF_8)) {
+            File[] children = BASE_DIR.listFiles((dri, name) -> name.endsWith("player.properties"));
+            if (children != null) {
+                Arrays.stream(children).sorted((o1, o2) -> {
+                    // Plain player.properties goes first; other files then override
+                    int res = o1.compareTo(o2);
+                    return res > -1 || "player.properties".equals(o2.getName()) ? res : 1;
+                }).forEach(PropertiesHolder::loadPlayerProperties);
+            } else {
+                throw new IllegalStateException(String.format("%s has no player.properties files", BASE_DIR));
+            }
+        }
+
+        private static void loadPlayerProperties(File properties) {
+            try (Reader reader = Files.newBufferedReader(properties.toPath(), StandardCharsets.UTF_8)) {
                 PROPERTIES.load(reader);
             } catch (IOException e) {
                 throw new RuntimeException(e);
