@@ -1,4 +1,4 @@
-/**
+/*
  * Internal Use Only
  *
  * Copyright 2011 Red Hat, Inc. All rights reserved.
@@ -14,7 +14,10 @@ import java.io.InputStreamReader;
 import java.io.Reader;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Files;
+import java.nio.file.Path;
+import java.util.Arrays;
 import java.util.Collections;
+import java.util.Comparator;
 import java.util.HashMap;
 import java.util.Map;
 import java.util.Properties;
@@ -52,6 +55,7 @@ class Util {
         if (closeable != null) try {
             closeable.close();
         } catch (Throwable e) {
+            // ignored
         }
     }
 
@@ -88,10 +92,32 @@ class Util {
     private static class PropertiesHolder {
         static final Properties PROPERTIES = new Properties();
         static {
-            try (Reader reader = Files.newBufferedReader(BASE_DIR.toPath().resolve("player.properties"), StandardCharsets.UTF_8)) {
-                PROPERTIES.load(reader);
-            } catch (IOException e) {
-                throw new RuntimeException(e);
+            boolean found = false;
+            // Look for at least one of the two valid property files. The private
+            // file's settings can override or add to the properties in the non-private one.
+            // Either can provide any property; the 'private' name is just a nod to
+            // the expected use case of using a separate file for sensitive settings.
+            for (String file : Arrays.asList("player.properties", "player.private.properties")) {
+                if (loadPlayerProperties(file)) {
+                    found = true;
+                }
+            }
+            if (!found) {
+                throw new IllegalStateException(String.format("%s has no player.properties or player.private.properties file", BASE_DIR));
+            }
+        }
+
+        private static boolean loadPlayerProperties(String fileName) {
+            Path propertyFile = BASE_DIR.toPath().resolve(fileName);
+            if (propertyFile.toFile().exists()) {
+                try (Reader reader = Files.newBufferedReader(propertyFile, StandardCharsets.UTF_8)) {
+                    PROPERTIES.load(reader);
+                    return true;
+                } catch (IOException e) {
+                    throw new RuntimeException(e);
+                }
+            } else {
+                return false;
             }
         }
     }
