@@ -234,8 +234,8 @@ public class PullPlayer {
 
     private boolean skipBuild(final int pullNumber, final ModelNode model) {
         if (model == null) {
-            System.out.printf("Skipping build %s as the model is null.%n", pullNumber);
-            return true;
+            System.out.printf("Not skipping build %s even though the model is null.%n", pullNumber);
+            return false;
         }
         if (skipLabel.isBlank()) {
             return false;
